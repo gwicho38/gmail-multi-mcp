@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gmail-multi-mcp"
+version = "0.1.0"
+description = "Multi-account Gmail MCP server with JIT account switching for Claude Code."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "google-api-python-client>=2.100.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-auth>=2.25.0",
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+gmail-multi-mcp = "gmail_multi_mcp.server:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gmail_multi_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
