@@ -66,3 +66,7 @@ def run_auth(argv: list[str]):
     config_path.write_text(json.dumps(config, indent=2))
 
     print(f"Account '{args.name}' ({email}) added successfully!")
+
+
+def main():
+    run_auth(sys.argv[1:])

@@ -50,10 +50,15 @@ mcp = FastMCP(
         "- If 'account' is omitted, the currently active account is used\n"
         "- Use gmail_list_accounts to see available accounts and which is active\n"
         "- Use gmail_switch_account to change the default active account\n\n"
-        "WHEN TO SWITCH:\n"
+        "CROSS-ACCOUNT SEARCH (DEFAULT):\n"
+        "- gmail_search_emails searches ALL accounts when 'account' is omitted\n"
+        "- For vague queries like 'emails from dylan', ALWAYS omit the account param to search everywhere\n"
+        "- Only specify 'account' when the user explicitly asks about a specific account\n"
+        "- Results include '_account' and '_email' fields to identify which account each result came from\n\n"
+        "WHEN TO SPECIFY ACCOUNT:\n"
         "- When the user mentions a specific email address or domain, match it to an account\n"
         "- When the user says 'work email', 'personal email', etc., infer the right account\n"
-        "- When doing cross-account operations, use the 'account' parameter on individual tools\n"
+        "- For write operations (send, draft, delete), always resolve to a specific account\n"
     ),
 )
 
@@ -131,21 +136,53 @@ async def gmail_current_account() -> str:
 @mcp.tool(name="gmail_search_emails")
 async def gmail_search_emails(
     query: Annotated[str, Field(description="Gmail search query (e.g. 'is:unread', 'from:alice@example.com')")],
-    max_results: Annotated[int, Field(default=10, description="Maximum results to return (1-50)", ge=1, le=50)] = 10,
-    account: Annotated[Optional[str], Field(description="Account label to use (omit for active account)")] = None,
+    max_results: Annotated[int, Field(default=10, description="Maximum results to return per account (1-50)", ge=1, le=50)] = 10,
+    account: Annotated[Optional[str], Field(description="Account label to search. Omit to search ALL accounts.")] = None,
 ) -> str:
-    """Search emails using Gmail search syntax."""
+    """Search emails using Gmail search syntax. Searches ALL accounts when no account is specified."""
     try:
-        svc = _get_service(account)
-        resolved = _manager.resolve(account)
-        results = gmail_client.search_emails(svc, query, max_results=max_results)
+        if _manager is None:
+            raise RuntimeError("Server not initialized")
+
+        if account is not None:
+            # Single-account search
+            svc = _get_service(account)
+            resolved = _manager.resolve(account)
+            results = gmail_client.search_emails(svc, query, max_results=max_results)
+            return json.dumps(
+                {
+                    "account": resolved,
+                    "email": _manager.get_email(resolved),
+                    "query": query,
+                    "result_count": len(results),
+                    "results": results,
+                },
+                indent=2,
+            )
+
+        # Cross-account search: fan out to all accounts
+        all_results = []
+        for name in _manager.account_names:
+            try:
+                svc = _manager.get_service(name)
+                results = gmail_client.search_emails(svc, query, max_results=max_results)
+                for r in results:
+                    r["_account"] = name
+                    r["_email"] = _manager.get_email(name)
+                all_results.extend(results)
+            except Exception as acct_err:
+                all_results.append({
+                    "_account": name,
+                    "_email": _manager.get_email(name),
+                    "error": str(acct_err),
+                })
+
         return json.dumps(
             {
-                "account": resolved,
-                "email": _manager.get_email(resolved),
                 "query": query,
-                "result_count": len(results),
-                "results": results,
+                "accounts_searched": _manager.account_names,
+                "total_results": len([r for r in all_results if "error" not in r]),
+                "results": all_results,
             },
             indent=2,
         )

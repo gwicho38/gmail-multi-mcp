@@ -133,24 +133,41 @@ class TestGmailCurrentAccount:
 
 class TestGmailSearchEmails:
     @pytest.mark.asyncio
-    async def test_search_emails_delegates(self):
+    async def test_search_emails_cross_account(self):
+        """When account is omitted, search fans out to ALL accounts."""
         from gmail_multi_mcp.server import gmail_search_emails
 
         mgr = _make_mock_manager()
-        mock_results = [{"id": "msg1", "subject": "Test"}]
+        work_results = [{"id": "msg1", "subject": "Test"}]
+        personal_results = [{"id": "msg2", "subject": "Other"}]
+
+        def search_by_account(svc, query, max_results=10):
+            # Return different results based on which service mock was passed
+            if svc == work_svc:
+                return work_results
+            return personal_results
+
+        work_svc = MagicMock()
+        personal_svc = MagicMock()
+        mgr.get_service.side_effect = lambda name: {"work": work_svc, "personal": personal_svc}[name]
+
         with (
             patch("gmail_multi_mcp.server._manager", mgr),
-            patch("gmail_multi_mcp.server.gmail_client.search_emails", return_value=mock_results) as mock_search,
+            patch("gmail_multi_mcp.server.gmail_client.search_emails", side_effect=search_by_account) as mock_search,
         ):
             result = await gmail_search_emails(query="is:unread", max_results=5)
             data = json.loads(result)
-            assert data["account"] == "work"
-            assert data["result_count"] == 1
-            assert data["results"] == mock_results
-            mock_search.assert_called_once_with(mgr.get_service.return_value, "is:unread", max_results=5)
+            assert data["accounts_searched"] == ["work", "personal"]
+            assert data["total_results"] == 2
+            assert len(data["results"]) == 2
+            # Results should have _account metadata
+            assert data["results"][0]["_account"] == "work"
+            assert data["results"][1]["_account"] == "personal"
+            assert mock_search.call_count == 2
 
     @pytest.mark.asyncio
     async def test_search_emails_with_account(self):
+        """When account is specified, search only that account."""
         from gmail_multi_mcp.server import gmail_search_emails
 
         mgr = _make_mock_manager()
@@ -165,15 +182,29 @@ class TestGmailSearchEmails:
             mgr.get_service.assert_called_once_with("personal")
 
     @pytest.mark.asyncio
-    async def test_search_emails_error(self):
+    async def test_search_emails_cross_account_partial_error(self):
+        """Cross-account search includes errors per account without failing overall."""
         from gmail_multi_mcp.server import gmail_search_emails
 
         mgr = _make_mock_manager()
-        mgr.get_service.side_effect = AccountNotFoundError("Not found")
-        with patch("gmail_multi_mcp.server._manager", mgr):
+
+        def get_service_with_error(name):
+            if name == "personal":
+                raise RuntimeError("Auth expired")
+            return MagicMock()
+
+        mgr.get_service.side_effect = get_service_with_error
+
+        with (
+            patch("gmail_multi_mcp.server._manager", mgr),
+            patch("gmail_multi_mcp.server.gmail_client.search_emails", return_value=[{"id": "msg1"}]),
+        ):
             result = await gmail_search_emails(query="test")
             data = json.loads(result)
-            assert "error" in data
+            assert data["accounts_searched"] == ["work", "personal"]
+            # work succeeds, personal errors
+            assert data["total_results"] == 1
+            assert any("error" in r for r in data["results"])
 
 
 class TestGmailReadEmail:
@@ -572,7 +603,7 @@ class TestErrorHandling:
         mgr.get_service.side_effect = RuntimeError("Service failed")
 
         tool_calls = [
-            (server.gmail_search_emails, {"query": "test"}),
+            (server.gmail_search_emails, {"query": "test", "account": "work"}),
             (server.gmail_read_email, {"message_id": "msg1"}),
             (server.gmail_send_email, {"to": "a@b.com", "subject": "s", "body": "b"}),
             (server.gmail_draft_email, {"to": "a@b.com", "subject": "s", "body": "b"}),
