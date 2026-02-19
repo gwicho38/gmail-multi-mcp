@@ -81,6 +81,8 @@ class AccountManager:
         logger.info("Switched active account to: %s", name)
 
     def resolve(self, account: str | None) -> str:
+        if account is None and self._active is None:
+            raise AccountNotFoundError("No accounts configured.")
         name = account or self._active
         if name not in self._accounts:
             raise AccountNotFoundError(
@@ -96,12 +98,13 @@ class AccountManager:
         acct = self._accounts[name]
         creds_data = json.loads(acct.credentials_path.read_text())
 
+        client_id, client_secret = self._get_client_credentials()
         creds = Credentials(
             token=creds_data.get("access_token"),
             refresh_token=creds_data.get("refresh_token"),
             token_uri="https://oauth2.googleapis.com/token",
-            client_id=self._get_client_id(),
-            client_secret=self._get_client_secret(),
+            client_id=client_id,
+            client_secret=client_secret,
             scopes=SCOPES,
         )
 
@@ -111,18 +114,19 @@ class AccountManager:
                 creds_data["access_token"] = creds.token
                 acct.credentials_path.write_text(json.dumps(creds_data))
                 logger.info("Refreshed token for account: %s", name)
+            else:
+                raise ValueError(
+                    f"Credentials for '{name}' are invalid and cannot be refreshed."
+                )
 
         service = build("gmail", "v1", credentials=creds)
         self._services[name] = service
         return service
 
-    def _get_client_id(self) -> str:
+    def _get_client_credentials(self) -> tuple[str, str]:
         keys = json.loads(self._oauth_keys_path.read_text())
-        return keys["installed"]["client_id"]
-
-    def _get_client_secret(self) -> str:
-        keys = json.loads(self._oauth_keys_path.read_text())
-        return keys["installed"]["client_secret"]
+        installed = keys["installed"]
+        return installed["client_id"], installed["client_secret"]
 
     def list_accounts_info(self) -> list[dict]:
         return [
@@ -143,6 +147,7 @@ class AccountManager:
         self._accounts[name] = Account(
             name=name, email=email, credentials_path=creds_path
         )
+        self._services.pop(name, None)
 
         config_path = self._config_dir / "config.json"
         config = (

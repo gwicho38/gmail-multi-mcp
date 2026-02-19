@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from gmail_multi_mcp.accounts import AccountManager, AccountNotFoundError
+from gmail_multi_mcp.accounts import AccountManager, AccountNotFoundError, Account
 
 
 class TestAccountManagerInit:
@@ -60,6 +60,13 @@ class TestAccountManagerResolve:
         with pytest.raises(AccountNotFoundError):
             mgr.resolve("nonexistent")
 
+    def test_resolve_raises_when_no_accounts_configured(self, tmp_config_dir):
+        mgr = AccountManager(tmp_config_dir)
+        mgr._accounts.clear()
+        mgr._active = None
+        with pytest.raises(AccountNotFoundError, match="No accounts configured"):
+            mgr.resolve(None)
+
 
 class TestAccountManagerService:
     @patch("gmail_multi_mcp.accounts.build")
@@ -104,3 +111,64 @@ class TestAccountManagerService:
         mgr.get_service("work")
 
         mock_creds.refresh.assert_called_once()
+
+        # Issue 5: verify the refreshed token is persisted to disk
+        creds_data = json.loads((tmp_config_dir / "accounts" / "work.json").read_text())
+        assert creds_data["access_token"] == "ya29.refreshed-token"
+
+    @patch("gmail_multi_mcp.accounts.build")
+    @patch("gmail_multi_mcp.accounts.Credentials")
+    def test_get_service_raises_when_invalid_and_no_refresh_token(
+        self, mock_creds_cls, mock_build, tmp_config_dir
+    ):
+        mock_creds = MagicMock()
+        mock_creds.valid = False
+        mock_creds.expired = False
+        mock_creds.refresh_token = None
+        mock_creds_cls.return_value = mock_creds
+
+        mgr = AccountManager(tmp_config_dir)
+        with pytest.raises(ValueError, match="invalid and cannot be refreshed"):
+            mgr.get_service("work")
+
+
+class TestAccountManagerAddAccount:
+    def test_add_account_appears_in_account_names(self, tmp_config_dir):
+        mgr = AccountManager(tmp_config_dir)
+        mgr.add_account("new", "new@example.com", {"access_token": "tok", "refresh_token": "ref"})
+        assert "new" in mgr.account_names
+
+    def test_add_account_writes_credentials_file(self, tmp_config_dir):
+        mgr = AccountManager(tmp_config_dir)
+        creds = {"access_token": "tok", "refresh_token": "ref"}
+        mgr.add_account("new", "new@example.com", creds)
+        creds_path = tmp_config_dir / "accounts" / "new.json"
+        assert creds_path.exists()
+        assert json.loads(creds_path.read_text()) == creds
+
+    def test_add_account_updates_config_json(self, tmp_config_dir):
+        mgr = AccountManager(tmp_config_dir)
+        mgr.add_account("new", "new@example.com", {"access_token": "tok", "refresh_token": "ref"})
+        config = json.loads((tmp_config_dir / "config.json").read_text())
+        assert config["accounts"]["new"] == "new@example.com"
+
+    @patch("gmail_multi_mcp.accounts.build")
+    @patch("gmail_multi_mcp.accounts.Credentials")
+    def test_add_account_invalidates_service_cache(self, mock_creds_cls, mock_build, tmp_config_dir):
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mock_creds_cls.return_value = mock_creds
+        mock_build.return_value = MagicMock()
+
+        mgr = AccountManager(tmp_config_dir)
+        # Prime the cache for "work"
+        s1 = mgr.get_service("work")
+        assert mock_build.call_count == 1
+
+        # Re-adding "work" should evict the cached service
+        mgr.add_account("work", "work@example.com", {"access_token": "new-tok", "refresh_token": "ref"})
+        assert "work" not in mgr._services
+
+        # Next call must rebuild the service (build called a second time)
+        mgr.get_service("work")
+        assert mock_build.call_count == 2
