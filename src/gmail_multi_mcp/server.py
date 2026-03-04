@@ -29,7 +29,7 @@ async def server_lifespan(mcp_server):
     """Load AccountManager on startup."""
     global _manager
     config_dir = CONFIG_DIR
-    if len(sys.argv) > 1 and sys.argv[1] != "auth":
+    if len(sys.argv) > 1 and sys.argv[1] not in ("auth",) and Path(sys.argv[1]).is_dir():
         config_dir = Path(sys.argv[1])
     _manager = AccountManager(config_dir)
     logger.info(
