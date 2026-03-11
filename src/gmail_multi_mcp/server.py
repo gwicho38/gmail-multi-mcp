@@ -12,6 +12,7 @@ from pydantic import Field
 
 from .accounts import AccountManager, AccountNotFoundError
 from . import gmail_client
+from . import oauth_flow
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +46,11 @@ mcp = FastMCP(
     lifespan=server_lifespan,
     instructions=(
         "Multi-account Gmail MCP server. Manages multiple Gmail accounts with JIT switching.\n\n"
+        "AUTHENTICATION:\n"
+        "- To add a new Gmail account: Call gmail_start_authentication with account name\n"
+        "- Copy the authorization_url and open it in your browser\n"
+        "- Sign in and authorize access, then copy the authorization code\n"
+        "- Call gmail_complete_authentication with the account name and code to finish\n\n"
         "ACCOUNT RESOLUTION:\n"
         "- Every Gmail tool accepts an optional 'account' parameter (account label name)\n"
         "- If 'account' is omitted, the currently active account is used\n"
@@ -125,6 +131,90 @@ async def gmail_current_account() -> str:
             indent=2,
         )
     except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# Store OAuth flows during authentication process
+_oauth_flows: dict[str, any] = {}
+
+
+@mcp.tool(name="gmail_start_authentication")
+async def gmail_start_authentication(
+    account_name: Annotated[str, Field(description="Label for this account (e.g., 'work', 'personal')")],
+) -> str:
+    """
+    Start OAuth authentication for a new Gmail account.
+
+    Returns an authorization URL. Open this URL in your browser, sign in, and you'll receive
+    an authorization code. Then call gmail_complete_authentication with the code.
+    """
+    try:
+        oauth_keys_path = CONFIG_DIR / "gcp-oauth.keys.json"
+        flow, auth_url = oauth_flow.get_oauth_url(oauth_keys_path)
+
+        # Store flow for later use (keyed by account name)
+        _oauth_flows[account_name] = flow
+
+        return json.dumps({
+            "status": "authorization_url_ready",
+            "account_name": account_name,
+            "authorization_url": auth_url,
+            "instructions": [
+                "1. Click the authorization_url or copy it to your browser",
+                "2. Sign in with your Gmail account",
+                "3. Click 'Allow' to grant access",
+                "4. The browser will redirect to http://localhost?code=... (page won't load - that's OK)",
+                "5. Copy the 'code' value from the URL bar (everything after code= up to the next &)",
+                "6. Call gmail_complete_authentication with the code and account name"
+            ]
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool(name="gmail_complete_authentication")
+async def gmail_complete_authentication(
+    account_name: Annotated[str, Field(description="The account name from gmail_start_authentication")],
+    authorization_code: Annotated[str, Field(description="The authorization code from the OAuth consent screen")],
+) -> str:
+    """
+    Complete OAuth authentication by exchanging the authorization code for credentials.
+
+    Call this after getting the authorization code from the URL provided by gmail_start_authentication.
+    """
+    try:
+        if _manager is None:
+            raise RuntimeError("Server not initialized")
+
+        if account_name not in _oauth_flows:
+            return json.dumps({
+                "error": f"No pending authentication for '{account_name}'. Call gmail_start_authentication first."
+            })
+
+        flow = _oauth_flows[account_name]
+        oauth_keys_path = CONFIG_DIR / "gcp-oauth.keys.json"
+
+        # Exchange code for credentials
+        credentials = oauth_flow.exchange_code_for_credentials(flow, authorization_code)
+
+        # Verify credentials and get email
+        email = oauth_flow.verify_and_get_email(credentials, oauth_keys_path)
+
+        # Save account
+        _manager.add_account(account_name, email, credentials)
+
+        # Clean up
+        del _oauth_flows[account_name]
+
+        return json.dumps({
+            "status": "success",
+            "account_name": account_name,
+            "email": email,
+            "message": f"Successfully authenticated {account_name} ({email})"
+        }, indent=2)
+    except Exception as e:
+        if account_name in _oauth_flows:
+            del _oauth_flows[account_name]
         return json.dumps({"error": str(e)})
 
 
