@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .accounts import AccountManager, AccountNotFoundError
@@ -69,6 +70,15 @@ mcp = FastMCP(
 )
 
 
+# Tool annotations let clients (Codex, Claude) distinguish reads from writes.
+# Unannotated tools are treated as writes and may be blocked by approval policy.
+READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+LOCAL_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+REMOTE_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
+OUTBOUND = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
+DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
+
+
 def _get_service(account: str | None = None):
     """Get a Gmail API service object, optionally for a specific account."""
     if _manager is None:
@@ -81,7 +91,7 @@ def _get_service(account: str | None = None):
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(name="gmail_list_accounts")
+@mcp.tool(name="gmail_list_accounts", annotations=READ_ONLY)
 async def gmail_list_accounts() -> str:
     """List all configured Gmail accounts and which one is currently active."""
     try:
@@ -98,7 +108,7 @@ async def gmail_list_accounts() -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_switch_account")
+@mcp.tool(name="gmail_switch_account", annotations=LOCAL_WRITE)
 async def gmail_switch_account(
     account: Annotated[str, Field(description="Account label name to switch to")],
 ) -> str:
@@ -118,7 +128,7 @@ async def gmail_switch_account(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_current_account")
+@mcp.tool(name="gmail_current_account", annotations=READ_ONLY)
 async def gmail_current_account() -> str:
     """Show the currently active Gmail account name and email."""
     try:
@@ -138,7 +148,7 @@ async def gmail_current_account() -> str:
 _oauth_flows: dict[str, any] = {}
 
 
-@mcp.tool(name="gmail_start_authentication")
+@mcp.tool(name="gmail_start_authentication", annotations=OUTBOUND)
 async def gmail_start_authentication(
     account_name: Annotated[str, Field(description="Label for this account (e.g., 'work', 'personal')")],
 ) -> str:
@@ -172,7 +182,7 @@ async def gmail_start_authentication(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_complete_authentication")
+@mcp.tool(name="gmail_complete_authentication", annotations=OUTBOUND)
 async def gmail_complete_authentication(
     account_name: Annotated[str, Field(description="The account name from gmail_start_authentication")],
     authorization_code: Annotated[str, Field(description="The authorization code from the OAuth consent screen")],
@@ -223,7 +233,7 @@ async def gmail_complete_authentication(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(name="gmail_search_emails")
+@mcp.tool(name="gmail_search_emails", annotations=READ_ONLY)
 async def gmail_search_emails(
     query: Annotated[str, Field(description="Gmail search query (e.g. 'is:unread', 'from:alice@example.com')")],
     max_results: Annotated[int, Field(default=10, description="Maximum results to return per account (1-50)", ge=1, le=50)] = 10,
@@ -280,7 +290,7 @@ async def gmail_search_emails(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_read_email")
+@mcp.tool(name="gmail_read_email", annotations=READ_ONLY)
 async def gmail_read_email(
     message_id: Annotated[str, Field(description="Gmail message ID")],
     account: Annotated[Optional[str], Field(description="Account label to use (omit for active account)")] = None,
@@ -302,7 +312,7 @@ async def gmail_read_email(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_send_email")
+@mcp.tool(name="gmail_send_email", annotations=OUTBOUND)
 async def gmail_send_email(
     to: Annotated[str, Field(description="Recipient email address")],
     subject: Annotated[str, Field(description="Email subject line")],
@@ -345,7 +355,7 @@ async def gmail_send_email(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_draft_email")
+@mcp.tool(name="gmail_draft_email", annotations=REMOTE_WRITE)
 async def gmail_draft_email(
     to: Annotated[str, Field(description="Recipient email address")],
     subject: Annotated[str, Field(description="Email subject line")],
@@ -388,7 +398,7 @@ async def gmail_draft_email(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_delete_email")
+@mcp.tool(name="gmail_delete_email", annotations=DESTRUCTIVE)
 async def gmail_delete_email(
     message_id: Annotated[str, Field(description="Gmail message ID to delete (moves to trash)")],
     account: Annotated[Optional[str], Field(description="Account label to use (omit for active account)")] = None,
@@ -410,7 +420,7 @@ async def gmail_delete_email(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_batch_delete_emails")
+@mcp.tool(name="gmail_batch_delete_emails", annotations=DESTRUCTIVE)
 async def gmail_batch_delete_emails(
     message_ids: Annotated[list[str], Field(description="List of Gmail message IDs to delete")],
     batch_size: Annotated[int, Field(default=50, description="Number of messages per batch")] = 50,
@@ -433,7 +443,7 @@ async def gmail_batch_delete_emails(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_modify_email")
+@mcp.tool(name="gmail_modify_email", annotations=REMOTE_WRITE)
 async def gmail_modify_email(
     message_id: Annotated[str, Field(description="Gmail message ID")],
     add_label_ids: Annotated[Optional[list[str]], Field(description="Label IDs to add")] = None,
@@ -462,7 +472,7 @@ async def gmail_modify_email(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_batch_modify_emails")
+@mcp.tool(name="gmail_batch_modify_emails", annotations=REMOTE_WRITE)
 async def gmail_batch_modify_emails(
     message_ids: Annotated[list[str], Field(description="List of Gmail message IDs to modify")],
     add_label_ids: Annotated[Optional[list[str]], Field(description="Label IDs to add")] = None,
@@ -498,7 +508,7 @@ async def gmail_batch_modify_emails(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(name="gmail_list_labels")
+@mcp.tool(name="gmail_list_labels", annotations=READ_ONLY)
 async def gmail_list_labels(
     account: Annotated[Optional[str], Field(description="Account label to use (omit for active account)")] = None,
 ) -> str:
@@ -519,7 +529,7 @@ async def gmail_list_labels(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_create_label")
+@mcp.tool(name="gmail_create_label", annotations=REMOTE_WRITE)
 async def gmail_create_label(
     name: Annotated[str, Field(description="Label name")],
     label_list_visibility: Annotated[str, Field(description="Visibility in label list")] = "labelShow",
@@ -548,7 +558,7 @@ async def gmail_create_label(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_update_label")
+@mcp.tool(name="gmail_update_label", annotations=REMOTE_WRITE)
 async def gmail_update_label(
     label_id: Annotated[str, Field(description="Label ID to update")],
     name: Annotated[Optional[str], Field(description="New label name")] = None,
@@ -579,7 +589,7 @@ async def gmail_update_label(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_delete_label")
+@mcp.tool(name="gmail_delete_label", annotations=DESTRUCTIVE)
 async def gmail_delete_label(
     label_id: Annotated[str, Field(description="Label ID to delete")],
     account: Annotated[Optional[str], Field(description="Account label to use (omit for active account)")] = None,
@@ -606,7 +616,7 @@ async def gmail_delete_label(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(name="gmail_list_filters")
+@mcp.tool(name="gmail_list_filters", annotations=READ_ONLY)
 async def gmail_list_filters(
     account: Annotated[Optional[str], Field(description="Account label to use (omit for active account)")] = None,
 ) -> str:
@@ -627,7 +637,7 @@ async def gmail_list_filters(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_get_filter")
+@mcp.tool(name="gmail_get_filter", annotations=READ_ONLY)
 async def gmail_get_filter(
     filter_id: Annotated[str, Field(description="Filter ID to retrieve")],
     account: Annotated[Optional[str], Field(description="Account label to use (omit for active account)")] = None,
@@ -649,7 +659,7 @@ async def gmail_get_filter(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_create_filter")
+@mcp.tool(name="gmail_create_filter", annotations=REMOTE_WRITE)
 async def gmail_create_filter(
     criteria: Annotated[dict, Field(description="Filter criteria (e.g. {\"from\": \"user@example.com\"})")],
     action: Annotated[dict, Field(description="Filter action (e.g. {\"addLabelIds\": [\"Label_1\"]})")],
@@ -672,7 +682,7 @@ async def gmail_create_filter(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool(name="gmail_delete_filter")
+@mcp.tool(name="gmail_delete_filter", annotations=DESTRUCTIVE)
 async def gmail_delete_filter(
     filter_id: Annotated[str, Field(description="Filter ID to delete")],
     account: Annotated[Optional[str], Field(description="Account label to use (omit for active account)")] = None,
@@ -699,7 +709,7 @@ async def gmail_delete_filter(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(name="gmail_download_attachment")
+@mcp.tool(name="gmail_download_attachment", annotations=LOCAL_WRITE)
 async def gmail_download_attachment(
     message_id: Annotated[str, Field(description="Gmail message ID containing the attachment")],
     attachment_id: Annotated[str, Field(description="Attachment ID to download")],
