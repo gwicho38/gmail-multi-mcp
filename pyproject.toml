@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gmail-multi-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Multi-account Gmail MCP server with JIT account switching for Claude Code."
 requires-python = ">=3.11"
 dependencies = [

@@ -657,3 +657,45 @@ class TestMain:
                     main()
                     mock_auth_module.run_auth.assert_called_once_with(["add", "work"])
                     mock_mcp.run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tool annotations
+# ---------------------------------------------------------------------------
+
+
+class TestToolAnnotations:
+    """Clients such as Codex gate unannotated tools behind write approval."""
+
+    READ_ONLY = (
+        "gmail_list_accounts", "gmail_current_account", "gmail_search_emails",
+        "gmail_read_email", "gmail_list_labels", "gmail_list_filters", "gmail_get_filter",
+    )
+    DESTRUCTIVE = (
+        "gmail_delete_email", "gmail_batch_delete_emails", "gmail_delete_label",
+        "gmail_delete_filter",
+    )
+
+    @pytest.mark.asyncio
+    async def test_read_tools_declare_read_only_hint(self):
+        from gmail_multi_mcp.server import mcp
+
+        tools = {tool.name: tool for tool in await mcp.list_tools()}
+        for name in self.READ_ONLY:
+            annotations = tools[name].annotations
+            assert annotations is not None, name
+            assert annotations.readOnlyHint is True, name
+            assert annotations.destructiveHint is False, name
+
+    @pytest.mark.asyncio
+    async def test_every_other_tool_is_annotated_as_a_write(self):
+        from gmail_multi_mcp.server import mcp
+
+        for tool in await mcp.list_tools():
+            assert tool.annotations is not None, tool.name
+            if tool.name not in self.READ_ONLY:
+                assert tool.annotations.readOnlyHint is False, tool.name
+        tools = {tool.name: tool for tool in await mcp.list_tools()}
+        for name in self.DESTRUCTIVE:
+            assert tools[name].annotations.destructiveHint is True, name
+        assert tools["gmail_send_email"].annotations.openWorldHint is True
